@@ -1,9 +1,159 @@
 <!DOCTYPE html>
-<html>
-  <head>
-    <title>My Crypto Chart Test</title>
-  </head>
-  <body>
-    <h1>Hello from GitHub Pages 🎉</h1>
-  </body>
+<html lang="fa">
+<head>
+  <meta charset="UTF-8" />
+  <title>چارت AVAX/USDT با تم دارک</title>
+  <script src="https://unpkg.com/lightweight-charts@4.0.0/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    body { margin: 0; font-family: Arial; background-color: #181818; }
+    #chart { height: 100vh; width: 100vw; position: relative; }
+    #loading {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      padding: 6px 12px;
+      background: rgba(0, 0, 0, 0.7);
+      color: white;
+      font-size: 14px;
+      border-radius: 4px;
+      z-index: 999;
+    }
+    #scrollToEndBtn {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      padding: 10px 20px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      z-index: 1000;
+    }
+    #scrollToEndBtn:hover {
+      background-color: #0056b3;
+    }
+  </style>
+</head>
+<body>
+<div id="loading">در حال لود...</div>
+<div id="chart"></div>
+<button id="scrollToEndBtn">آخرین کندل</button>
+
+<script>
+const chart = LightweightCharts.createChart(document.getElementById('chart'), {
+  layout: {
+    background: { color: '#161A25' }, // پس‌زمینه دارک
+    textColor: '#ffffff', // رنگ متن سفید
+  },
+  timeScale: {
+    timeVisible: true,
+    secondsVisible: false,
+    borderColor: '#444444' // رنگ خط مرز تایم اسکیل
+  },
+  grid: {
+    vertLines: { color: '#a0a0a01f' }, // رنگ خطوط عمودی
+    horzLines: { color: '#a0a0a01f' }, // رنگ خطوط افقی
+  },
+  crosshair: {
+    vertLine: {
+      color: '#888888', // رنگ خط عمودی crosshair
+      width: 1
+    },
+    horzLine: {
+      color: '#888888', // رنگ خط افقی crosshair
+      width: 1
+    }
+  }
+});
+const candleSeries = chart.addCandlestickSeries();
+
+const INTERVAL = 15 * 60 * 1000; // 15m in ms
+let allCandles = [];
+let earliestTime = null;
+let latestCandleTime = null;
+let loading = false;
+
+async function fetchCandles(start, end) {
+  const url = `https://api.binance.com/api/v3/klines?symbol=AVAXUSDT&interval=15m&limit=1000&startTime=${start}&endTime=${end}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  return data.map(d => ({
+    time: Math.floor(d[0] / 1000),
+    open: parseFloat(d[1]),
+    high: parseFloat(d[2]),
+    low: parseFloat(d[3]),
+    close: parseFloat(d[4])
+  }));
+}
+
+async function loadInitial() {
+  const end = Date.now();
+  const start = end - 500 * INTERVAL;
+  const candles = await fetchCandles(start, end);
+  if (candles.length > 0) {
+    allCandles = candles;
+    earliestTime = candles[0].time * 1000;
+    latestCandleTime = candles[candles.length - 1].time * 1000;
+    candleSeries.setData(allCandles);
+  }
+}
+
+chart.timeScale().subscribeVisibleLogicalRangeChange(async (range) => {
+  if (loading || !range) return;
+  const bars = candleSeries.barsInLogicalRange(range);
+  if (bars && bars.barsBefore < 50) {
+    loading = true;
+    const end = earliestTime - 1;
+    const start = end - 1000 * INTERVAL;
+    const more = await fetchCandles(start, end);
+    if (more.length > 0) {
+      allCandles = [...more, ...allCandles];
+      earliestTime = more[0].time * 1000;
+      candleSeries.setData(allCandles);
+    }
+    loading = false;
+  }
+});
+
+function startWebSocket() {
+  const ws = new WebSocket('wss://stream.binance.com:9443/ws/avaxusdt@kline_15m');
+  ws.onmessage = (event) => {
+    const k = JSON.parse(event.data).k;
+    const candle = {
+      time: Math.floor(k.t / 1000),
+      open: parseFloat(k.o),
+      high: parseFloat(k.h),
+      low: parseFloat(k.l),
+      close: parseFloat(k.c)
+    };
+    candleSeries.update(candle);
+    latestCandleTime = k.t;
+  };
+  ws.onclose = () => setTimeout(startWebSocket, 5000);
+}
+
+function updateCountdown() {
+  if (!latestCandleTime) return;
+  const now = Date.now();
+  const next = latestCandleTime + INTERVAL;
+  const remaining = Math.max(0, Math.floor((next - now) / 1000));
+  const m = String(Math.floor(remaining / 60)).padStart(2, '0');
+  const s = String(remaining % 60).padStart(2, '0');
+  const text = `${m}:${s}`;
+  document.getElementById("loading").textContent = text;
+}
+
+// Function to scroll to the latest candle
+function scrollToEnd() {
+  chart.timeScale().scrollToRealTime();
+}
+
+document.getElementById('scrollToEndBtn').addEventListener('click', scrollToEnd);
+
+loadInitial();
+startWebSocket();
+setInterval(updateCountdown, 1000);
+</script>
+</body>
 </html>
