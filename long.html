@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="fa">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>نمودار با مارکر</title>
+  <script src="https://unpkg.com/lightweight-charts@4.0.0/dist/lightweight-charts.standalone.production.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial;
+      background-color: #181818;
+    }
+
+    #chart {
+      height: 100vh;
+      width: 100vw;
+      position: relative;
+    }
+
+    #loading {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      padding: 6px 12px;
+      background: rgba(0, 0, 0, 0.7);
+      color: white;
+      font-size: 14px;
+      border-radius: 4px;
+      z-index: 999;
+    }
+
+    #scrollToEndBtn {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      padding: 10px 20px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      z-index: 1000;
+    }
+
+    #scrollToEndBtn:hover {
+      background-color: #0056b3;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="loading">در حال لود...</div>
+  <div class="input-box">
+    <label for="mcGinleyPeriod">McGinley Period:</label>
+    <input type="number" id="mcGinleyPeriod" value="6" />
+    <br />
+    <label for="emaFast">EMA Fast (Cloud Top):</label>
+    <input type="number" id="emaFast" value="1" />
+    <br />
+    <label for="emaSlow">EMA Slow (Cloud Bottom):</label>
+    <input type="number" id="emaSlow" value="8" />
+    <br />
+    <label for="trendiloLookback">Trendilo Lookback:</label>
+    <input type="number" id="trendiloLookback" value="44" />
+    <br />
+    <label for="trendiloOffset">Trendilo ALMA Offset:</label>
+    <input type="number" id="trendiloOffset" value="0.85" />
+    <br />
+    <label for="trendiloSigma">Trendilo Sigma:</label>
+    <input type="number" id="trendiloSigma" value="6" />
+    <br />
+    <label for="adxThreshold">ADX Threshold:</label>
+    <input type="number" id="adxThreshold" value="25" />
+    <br />
+    <br />
+    <label for="diLength">DI Length:</label>
+    <input type="number" id="diLength" value="14" />
+    <br />
+    <label for="adxSmoothing">ADX Smoothing:</label>
+    <input type="number" id="adxSmoothing" value="14" />
+  </div>
+  <div id="chart"></div>
+  <script>
+    // ایجاد چارت
+    const chart = LightweightCharts.createChart(document.getElementById('chart'), {
+      layout: {
+        background: { color: '#161A25' }, // پس‌زمینه دارک
+        textColor: '#ffffff', // رنگ متن سفید
+      },
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: false,
+        borderColor: '#444444' // رنگ خط مرز تایم اسکیل
+      },
+      grid: {
+        vertLines: { color: '#a0a0a01f' }, // رنگ خطوط عمودی
+        horzLines: { color: '#a0a0a01f' }, // رنگ خطوط افقی
+      },
+      crosshair: {
+        vertLine: {
+          color: '#888888', // رنگ خط عمودی crosshair
+          width: 1
+        },
+        horzLine: {
+          color: '#888888', // رنگ خط افقی crosshair
+          width: 1
+        }
+      }
+    });
+
+    function getInputValues() {
+      return {
+        mcGinleyPeriod: parseInt(document.getElementById('mcGinleyPeriod').value),
+        emaFast: parseInt(document.getElementById('emaFast').value),
+        emaSlow: parseInt(document.getElementById('emaSlow').value),
+        trendiloLookback: parseInt(document.getElementById('trendiloLookback').value),
+        trendiloOffset: parseFloat(document.getElementById('trendiloOffset').value),
+        trendiloSigma: parseInt(document.getElementById('trendiloSigma').value),
+        diLength: parseInt(document.getElementById('diLength').value),
+        adxSmoothing: parseInt(document.getElementById('adxSmoothing').value),
+        adxThreshold: parseInt(document.getElementById('adxThreshold').value),
+      };
+
+    }
+
+    // محاسبه McGinley Dynamic
+    function mcginley(series, length) {
+      let result = [series[0]];
+      for (let i = 1; i < series.length; i++) {
+        const prev = result[i - 1];
+        const price = series[i];
+        const newVal = prev + (price - prev) / (length * Math.pow(price / prev, 2));
+        result.push(newVal);
+      }
+      return result;
+    }
+
+    // محاسبه EMA طبق روش Pine Script
+    function calculateEMA(data, period) {
+      const k = 2 / (period + 1);
+      let emaArray = [];
+
+      // چک کردن اینکه آیا داده‌ها برای محاسبه کافی هستند
+      if (data.length < period) {
+        console.error("Not enough data for EMA calculation");
+        return [];  // بازگشت آرایه خالی اگر داده‌ها کافی نباشند
+      }
+
+      let emaPrev = data.slice(0, period).reduce((sum, b) => sum + b.close, 0) / period;  // میانگین ساده برای شروع
+      for (let i = 0; i < data.length; i++) {
+        if (i < period) {
+          emaArray.push(null);  // ابتدا تا دوره EMA مقادیر null
+        } else {
+          emaPrev = data[i].close * k + emaPrev * (1 - k);  // فرمول EMA
+          emaArray.push(emaPrev);
+        }
+      }
+      return emaArray;
+    }
+
+    // محاسبه Trendilo (ALMA)
+    function alma(series, window, offset, sigma) {
+      const m = offset * (window - 1); // مرکز
+      const s = window / sigma; // انحراف معیار
+      let wtdSum = []; // آرایه‌ای برای نگهداری مقادیر وزن‌دار
+
+      // اینجا از تکرار به صورت دستی به جای استفاده از repeat استفاده می‌کنیم
+      for (let i = 0; i < series.length; i++) {
+        if (i < window) {
+          wtdSum.push(null); // تا زمانی که داده به اندازه پنجره لازم نباشد null قرار می‌دهیم
+          continue;
+        }
+
+        const weights = Array.from({ length: window }, (_, j) =>
+          Math.exp(-((j - m) ** 2) / (2 * s * s)) // محاسبه وزن‌ها
+        );
+
+        const norm = weights.reduce((acc, weight) => acc + weight, 0); // نرمال‌سازی وزن‌ها
+        const weightedSum = series.slice(i - window, i).reduce(
+          (acc, value, idx) => acc + value * weights[idx],
+          0
+        ); // جمع وزن‌دار
+        wtdSum.push(weightedSum / norm); // ذخیره نتیجه نرمال‌شده
+      }
+
+      // چون مقداری برای موقعیت‌های ابتدایی وجود ندارد، آنها را به null تبدیل می‌کنیم
+      return Array(window).fill(null).concat(wtdSum.slice(window)); // ترکیب نتایج
+    }
+
+    function calculateDMI(data, diLength = 14, adxSmoothing = 14) {
+      const plusDM = [], minusDM = [], tr = [];
+
+      for (let i = 1; i < data.length; i++) {
+        const up = data[i].high - data[i - 1].high;
+        const down = data[i - 1].low - data[i].low;
+
+        plusDM.push(up > down && up > 0 ? up : 0);
+        minusDM.push(down > up && down > 0 ? down : 0);
+
+        const highLow = data[i].high - data[i].low;
+        const highClose = Math.abs(data[i].high - data[i - 1].close);
+        const lowClose = Math.abs(data[i].low - data[i - 1].close);
+        tr.push(Math.max(highLow, highClose, lowClose));
+      }
+
+      function rma(values, period) {
+        const result = [];
+        let sum = 0;
+        for (let i = 0; i < values.length; i++) {
+          if (i < period) {
+            sum += values[i];
+            result.push(null);
+          } else if (i === period) {
+            sum += values[i];
+            result.push(sum / period);
+          } else {
+            const prev = result[result.length - 1];
+            result.push((prev * (period - 1) + values[i]) / period);
+          }
+        }
+        return result;
+      }
+
+      const trRma = rma(tr, diLength);
+      const plusRma = rma(plusDM, diLength);
+      const minusRma = rma(minusDM, diLength);
+
+      const plusDI = plusRma.map((val, i) =>
+        val !== null && trRma[i] ? (100 * val) / trRma[i] : null
+      );
+      const minusDI = minusRma.map((val, i) =>
+        val !== null && trRma[i] ? (100 * val) / trRma[i] : null
+      );
+      const dx = plusDI.map((val, i) => {
+        if (val === null && minusDI[i] === null) return null;
+        const sum = val + minusDI[i];
+        return sum === 0 ? 0 : 100 * Math.abs(val - minusDI[i]) / sum;
+      });
+
+      const adx = rma(dx, adxSmoothing);
+      // پدینگ برای تطابق با طول داده اصلی
+      const leadingNulls = Array(1).fill(null);
+      return [leadingNulls.concat(plusDI), leadingNulls.concat(minusDI), leadingNulls.concat(adx)];
+    }
+
+    const candleSeries = chart.addCandlestickSeries();
+
+    const INTERVAL = 15 * 60 * 1000; // 15m in ms
+    let allCandles = [];
+    let earliestTime = null;
+    let latestCandleTime = null;
+    let loading = false;
+
+    async function fetchCandles(start, end) {
+      const url = `https://api.binance.com/api/v3/klines?symbol=AVAXUSDT&interval=15m&limit=1000&startTime=${start}&endTime=${end}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      return data.map(d => ({
+        time: Math.floor(d[0] / 1000),
+        open: parseFloat(d[1]),
+        high: parseFloat(d[2]),
+        low: parseFloat(d[3]),
+        close: parseFloat(d[4])
+      }));
+    }
+
+    // بروزرسانی مارکرها با تغییر ورودی‌ها
+    function updateMarkers() {
+      const inputValues = getInputValues();  // دریافت مقادیر ورودی از کاربر
+
+      // محاسبه اندیکاتورها
+      const closes = allCandles.map(c => c.close);
+      const mcLine = mcginley(closes, inputValues.mcGinleyPeriod);
+      const emaFast = calculateEMA(allCandles, inputValues.emaFast);  // استفاده از ورودی برای EMA فست
+      const emaSlow = calculateEMA(allCandles, inputValues.emaSlow);  // استفاده از ورودی برای EMA کند
+      const [plusDI, minusDI, adxArray] = calculateDMI(allCandles, inputValues.diLength, inputValues.adxSmoothing);
+      const htfTrendArr = Array(allCandles.length).fill(true);  // تایم‌فریم بالاتر (موقتاً)
+
+      // حذف مارکرهای قبلی
+      strategyMarkers = [];
+
+      // اعمال استراتژی برای کندل‌ها
+      allCandles.forEach((candle, i) => {
+        checkStrategy(candle, i, mcLine, emaFast, emaSlow, adxArray, htfTrendArr);
+      });
+
+      // اضافه کردن مارکرهای جدید
+      candleSeries.setMarkers(strategyMarkers);
+    }
+
+    async function loadInitial() {
+      const end = Date.now();
+      const start = end - 500 * INTERVAL;
+      const candles = await fetchCandles(start, end);
+
+      if (candles.length > 0) {
+        allCandles = candles;
+        earliestTime = candles[0].time * 1000;
+        latestCandleTime = candles[candles.length - 1].time * 1000;
+        candleSeries.setData(allCandles);
+
+        // محاسبه اندیکاتورها و نمایش مارکرها برای کندل‌های اولیه
+        updateMarkers();
+      }
+
+      startWebSocket();  // پس از این که داده‌های اولیه بارگذاری شدن، وب‌سوکت شروع میشه
+    }
+
+
+
+    let sl_percent = 4.0;  // درصد توقف ضرر
+    let tp_percent = 3.0;   // درصد هدف سود
+    let positionOpen = false;
+    let positionType = null; // "long" یا "short"
+    let entryPrice = null;
+    let stopLoss = null;
+    let takeProfit = null;
+    let strategyMarkers = [];
+
+    // اصلاح تابع checkStrategy برای جلوگیری از استفاده از adxArray نال
+    // بررسی و اطمینان از اینکه مقادیر محاسباتی هیچ‌کدام null نیستند
+    function checkStrategy(candle, index, mcLine, emaFastArr, emaSlowArr, adxArray, htfTrendArr) {
+      // بررسی null بودن مقادیر قبل از استفاده
+      if (!mcLine || !emaFastArr || !emaSlowArr || !adxArray || !htfTrendArr) {
+        console.error("One of the data arrays is null or undefined.");
+        return; // جلوگیری از پردازش استراتژی اگر داده‌ها ناقص باشند
+      }
+
+      const close = candle.close;
+      const isGreen = candle.close > candle.open;
+      const isRed = candle.close < candle.open;
+
+      const ema1 = emaFastArr[index];
+      const ema2 = emaSlowArr[index];
+      const mc = mcLine[index];
+      const adx = adxArray[index]; // استفاده از adxArray
+      const htfTrend = htfTrendArr[index];
+
+      // چاپ مقادیر محاسباتی برای بررسی
+      console.log("mc:", mc);
+      console.log("ema1:", ema1);
+      console.log("ema2:", ema2);
+      console.log("adx:", adx);
+      console.log("htfTrend:", htfTrend);
+
+      if (mc === null || ema1 === null || ema2 === null || adx === null || htfTrend === null) {
+        console.error("Null value encountered in strategy conditions.");
+        return;  // جلوگیری از پردازش استراتژی در صورت null بودن مقادیر
+      }
+
+      const strongTrend = adx > 25;
+
+      const longCond = isGreen && close > mc && ema1 > ema2 && strongTrend && htfTrend;
+      const shortCond = isRed && close < mc && ema1 < ema2 && strongTrend && !htfTrend;
+
+      console.log(`Candle Time: ${candle.time}`);
+      console.log(`Long Condition: ${longCond}`);
+      console.log(`Short Condition: ${shortCond}`);
+
+      if (!positionOpen && longCond) {
+        positionOpen = true;
+        positionType = "long";
+        entryPrice = close;
+        stopLoss = close * (1 - sl_percent / 100);
+        takeProfit = close * (1 + tp_percent / 100);
+        strategyMarkers.push({
+          time: candle.time,
+          position: 'belowBar',
+          color: 'white',
+          shape: 'arrowUp',
+          text: 'ورود لانگ',
+        });
+      }
+
+      if (!positionOpen && shortCond) {
+        positionOpen = true;
+        positionType = "short";
+        entryPrice = close;
+        stopLoss = close * (1 + sl_percent / 100);
+        takeProfit = close * (1 - tp_percent / 100);
+        strategyMarkers.push({
+          time: candle.time,
+          position: 'aboveBar',
+          color: 'red',
+          shape: 'arrowDown',
+          text: 'ورود شورت',
+        });
+      }
+
+      if (positionOpen) {
+        if (positionType === "long") {
+          if (close <= stopLoss || close >= takeProfit) {
+            strategyMarkers.push({
+              time: candle.time,
+              position: 'aboveBar',
+              color: 'white',
+              shape: 'circle',
+              text: close >= takeProfit ? 'TP 🎯' : 'SL ❌'
+            });
+            positionOpen = false;
+          }
+        }
+        if (positionType === "short") {
+          if (close >= stopLoss || close <= takeProfit) {
+            strategyMarkers.push({
+              time: candle.time,
+              position: 'belowBar',
+              color: 'white',
+              shape: 'circle',
+              text: close <= takeProfit ? 'TP 🎯' : 'SL ❌'
+            });
+            positionOpen = false;
+          }
+        }
+      }
+
+      console.log("Strategy Markers:", strategyMarkers);
+    }
+
+    // اصلاح تابع بارگذاری کندل‌ها و اعمال استراتژی برای کندل‌های جدید
+    chart.timeScale().subscribeVisibleLogicalRangeChange(async (range) => {
+      if (loading || !range) return;
+
+      const bars = candleSeries.barsInLogicalRange(range);
+
+      if (bars && bars.barsBefore < 50) {
+        loading = true;
+
+        const end = earliestTime - 1;
+        const start = end - 1000 * INTERVAL;
+
+        try {
+          const more = await fetchCandles(start, end);
+
+          if (more.length > 0) {
+            allCandles = [...more, ...allCandles];
+            earliestTime = more[0].time * 1000;
+
+            candleSeries.setData(allCandles);
+
+            // استفاده از مقادیر ورودی اولیه برای کندل‌های جدید
+            resetInputValues();  // بازنشانی مقادیر ورودی‌ها به مقادیر اولیه
+
+            // محاسبه mcLine و adxArray و htfTrendArr برای داده‌های جدید
+            const closes = allCandles.map(c => c.close);
+            const mcLine = mcginley(closes, 14);  // فراخوانی تابع mcginley برای محاسبه mcLine
+            const [plusDI, minusDI, adxArray] = calculateDMI(allCandles, 14, 14); // محاسبه ADX
+            const htfTrendArr = Array(allCandles.length).fill(true);  // تایم‌فریم بالاتر (موقتاً)
+
+            // لاگ مقادیر محاسباتی قبل از استفاده
+            console.log("mcLine: ", mcLine);
+            console.log("emaFast: ", emaFast);
+            console.log("emaSlow: ", emaSlow);
+            console.log("adxArray: ", adxArray);
+            console.log("htfTrendArr: ", htfTrendArr);
+
+            // اعمال استراتژی برای هر کندل جدید
+            more.forEach((candle, i) => {
+              const index = allCandles.length - more.length + i;
+              checkStrategy(candle, index, mcLine, emaFast, emaSlow, adxArray, htfTrendArr);
+            });
+
+            candleSeries.setMarkers(strategyMarkers);
+          }
+        } catch (error) {
+          console.error('Error fetching new candles:', error);
+        }
+
+        loading = false;
+      }
+    });
+
+
+
+
+
+
+    // تابع WebSocket برای دریافت کندل‌ها
+    // اصلاح تابع WebSocket برای دریافت کندل‌ها و محاسبات
+    // اصلاح تابع WebSocket برای دریافت کندل‌ها و به‌روزرسانی مارکرها
+    function startWebSocket() {
+      const ws = new WebSocket('wss://stream.binance.com:9443/ws/avaxusdt@kline_15m');
+
+      ws.onmessage = (event) => {
+        const k = JSON.parse(event.data).k;
+        const candle = {
+          time: Math.floor(k.t / 1000),
+          open: parseFloat(k.o),
+          high: parseFloat(k.h),
+          low: parseFloat(k.l),
+          close: parseFloat(k.c)
+        };
+
+        // لود داده‌ها با WebSocket
+        candleSeries.update(candle);
+        latestCandleTime = k.t;
+
+        // محاسبه EMA و سایر اندیکاتورها برای کندل‌های جدید
+        const closes = allCandles.map(c => c.close);
+        const mcLine = mcginley(closes, 14);  // فراخوانی تابع mcginley برای محاسبه mcLine
+        const [plusDI, minusDI, adxArray] = calculateDMI(allCandles, 14, 14); // محاسبه ADX
+        const htfTrendArr = Array(allCandles.length).fill(true);  // تایم‌فریم بالاتر (موقتاً)
+
+        // اعمال استراتژی‌ها برای کندل جدید
+        checkStrategy(candle, allCandles.length - 1, mcLine, emaFast, emaSlow, adxArray, htfTrendArr);
+
+        // به روز رسانی مارکرها بعد از هر بار دریافت کندل جدید
+        candleSeries.setMarkers(strategyMarkers);
+      };
+
+      ws.onclose = () => setTimeout(startWebSocket, 5000);  // شروع مجدد WebSocket در صورت قطع اتصال
+    }
+
+    // تابع بارگذاری کندل‌ها و به روز رسانی مارکرها
+    chart.timeScale().subscribeVisibleLogicalRangeChange(async (range) => {
+      if (loading || !range) return;
+
+      const bars = candleSeries.barsInLogicalRange(range);
+
+      if (bars && bars.barsBefore < 50) {
+        loading = true;
+
+        const end = earliestTime - 1;
+        const start = end - 1000 * INTERVAL;
+
+        try {
+          const more = await fetchCandles(start, end);
+
+          if (more.length > 0) {
+            allCandles = [...more, ...allCandles];
+            earliestTime = more[0].time * 1000;
+
+            candleSeries.setData(allCandles);
+
+            // استفاده از مقادیر ورودی اولیه برای کندل‌های جدید
+            resetInputValues();  // بازنشانی مقادیر ورودی‌ها به مقادیر اولیه
+
+            // محاسبه mcLine و adxArray و htfTrendArr برای داده‌های جدید
+            const closes = allCandles.map(c => c.close);
+            const mcLine = mcginley(closes, 14);  // فراخوانی تابع mcginley برای محاسبه mcLine
+            const [plusDI, minusDI, adxArray] = calculateDMI(allCandles, 14, 14); // محاسبه ADX
+            const htfTrendArr = Array(allCandles.length).fill(true);  // تایم‌فریم بالاتر (موقتاً)
+
+            // اعمال استراتژی برای هر کندل جدید
+            more.forEach((candle, i) => {
+              const index = allCandles.length - more.length + i;
+              checkStrategy(candle, index, mcLine, emaFast, emaSlow, adxArray, htfTrendArr);
+            });
+
+            // به روز رسانی مارکرها بعد از هر بار بارگذاری کندل‌ها
+            candleSeries.setMarkers(strategyMarkers);
+          }
+        } catch (error) {
+          console.error('Error fetching new candles:', error);
+        }
+
+        loading = false;
+      }
+    });
+
+    function updateCountdown() {
+      if (!latestCandleTime) return;
+      const now = Date.now();
+      const next = latestCandleTime + INTERVAL;
+      const remaining = Math.max(0, Math.floor((next - now) / 1000));
+      const m = String(Math.floor(remaining / 60)).padStart(2, '0');
+      const s = String(remaining % 60).padStart(2, '0');
+      const text = `${m}:${s}`;
+      document.getElementById("loading").textContent = text;
+    }
+
+    loadInitial();
+    startWebSocket();
+    setInterval(updateCountdown, 1000);
+
+
+
+    let strategySeries = chart.addLineSeries({ color: 'transparent' });
+    let mcGinleySeries = null;
+    let emaFastSeries = null;
+    let emaSlowSeries = null;
+    let trendiloSeries = null;
+
+    function drawMcGinley() {
+      const inputValues = getInputValues();
+      const candles = allCandles;
+      if (!candles || candles.length === 0) return;
+
+      const closes = candles.map(d => d.close);
+      const mcLine = mcginley(closes, inputValues.mcGinleyPeriod);
+
+      if (mcGinleySeries) chart.removeSeries(mcGinleySeries);
+
+      mcGinleySeries = chart.addLineSeries({ color: 'orange', lineWidth: 2 });
+      mcGinleySeries.setData(
+        candles.map((d, i) => {
+          const value = mcLine[i];
+          return value != null && !isNaN(value) ? { time: d.time, value } : null;
+        }).filter(Boolean)
+      );
+    }
+
+    function drawEMA() {
+      const inputValues = getInputValues();
+      const candles = allCandles;
+      if (!candles || candles.length === 0) return;
+
+      const emaFast = calculateEMA(candles, inputValues.emaFast);
+      const emaSlow = calculateEMA(candles, inputValues.emaSlow);
+
+      if (emaFastSeries) chart.removeSeries(emaFastSeries);
+      if (emaSlowSeries) chart.removeSeries(emaSlowSeries);
+
+      emaFastSeries = chart.addLineSeries({ color: 'green', lineWidth: 2 });
+      emaFastSeries.setData(
+        candles.map((d, i) => {
+          const value = emaFast[i];
+          return value != null && !isNaN(value) ? { time: d.time, value } : null;
+        }).filter(Boolean)
+      );
+
+      emaSlowSeries = chart.addLineSeries({ color: 'red', lineWidth: 2 });
+      emaSlowSeries.setData(
+        candles.map((d, i) => {
+          const value = emaSlow[i];
+          return value != null && !isNaN(value) ? { time: d.time, value } : null;
+        }).filter(Boolean)
+      );
+    }
+
+    function drawTrendilo() {
+      const inputValues = getInputValues();
+      const candles = allCandles;
+      if (!candles || candles.length === 0) return;
+
+      const closes = candles.map(d => d.close);
+      const trendilo = alma(closes, inputValues.trendiloLookback, inputValues.trendiloOffset, inputValues.trendiloSigma);
+
+      if (trendiloSeries) chart.removeSeries(trendiloSeries);
+
+      trendiloSeries = chart.addLineSeries({ color: 'blue', lineWidth: 2 });
+      trendiloSeries.setData(
+        candles.map((d, i) => {
+          const value = trendilo[i];
+          return value != null && !isNaN(value) ? { time: d.time, value } : null;
+        }).filter(Boolean)
+      );
+    }
+
+    // اجرا در ابتدا
+    loadInitial().then(() => {
+      drawMcGinley();
+      drawEMA();
+      drawTrendilo();
+    });
+
+    // فراخوانی updateMarkers هنگام تغییر ورودی‌ها
+    ['mcGinleyPeriod', 'emaFast', 'emaSlow', 'trendiloLookback', 'trendiloOffset', 'trendiloSigma', 'diLength', 'adxSmoothing', 'adxThreshold'].forEach(id => {
+      document.getElementById(id).addEventListener('input', updateMarkers);
+    });
+
+    let redrawTimeout;
+    chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+      clearTimeout(redrawTimeout);
+      redrawTimeout = setTimeout(() => {
+        drawMcGinley();
+        drawEMA();
+        drawTrendilo();
+      }, 150);
+    });
+  </script>
+</body>
